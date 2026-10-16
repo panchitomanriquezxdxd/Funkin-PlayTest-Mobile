@@ -1210,7 +1210,8 @@ class Project extends HXProject
     {
       var process = new Process(command, args);
       var output:String = process.stdout.readAll().toString().trim();
-      var code:Int = process.exitCode(true);
+      var exitCode:Null<Int> = process.exitCode(true);
+      var code:Int = exitCode != null ? exitCode : -1;
       process.close();
       return {code: code, output: output};
     }
