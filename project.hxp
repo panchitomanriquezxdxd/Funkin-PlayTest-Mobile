@@ -312,7 +312,9 @@ class Project extends HXProject
     FEATURE_NEWGROUNDS_AUTOLOGIN.apply(this, FEATURE_NEWGROUNDS.isEnabled(this) && isWeb());
     FEATURE_NEWGROUNDS_EVENTS.apply(this, FEATURE_NEWGROUNDS.isEnabled(this));
 
-    var editorsEnabled:Bool = isDesktop() || isMobile();
+    // Los editores (haxeui) solo en escritorio: en movil rompen la compilacion
+    // ("Loop in class building" en haxeui-core).
+    var editorsEnabled:Bool = isDesktop();
     FEATURE_DEBUG_MENU.apply(this, editorsEnabled);
     FEATURE_ANIMATION_EDITOR.apply(this, editorsEnabled);
     FEATURE_CHART_EDITOR.apply(this, editorsEnabled);
