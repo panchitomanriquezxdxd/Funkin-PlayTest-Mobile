@@ -127,9 +127,9 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
-      - name: Cache haxelib
+      - name: Restore haxelib cache
         id: cache-haxelib
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: .haxelib
           key: haxelib-android-apk-${{ env.HAXE_VERSION }}-${{ env.ANDROID_NDK_VERSION }}-${{ hashFiles('hmm.json') }}
@@ -181,6 +181,15 @@ jobs:
         shell: bash
         run: |
           haxelib run lime rebuild android -armv7 -arm64 2>&1 | tee "$LOG_DIR/07-lime-android.log"
+
+      # Se guarda aqui (y no al final del job) para no perder ~25 min de compilacion
+      # de Lime si el build del juego falla.
+      - name: Save haxelib cache
+        if: steps.cache-haxelib.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .haxelib
+          key: haxelib-android-apk-${{ env.HAXE_VERSION }}-${{ env.ANDROID_NDK_VERSION }}-${{ hashFiles('hmm.json') }}
 
       - name: Build Android
         shell: bash
@@ -280,16 +289,19 @@ jobs:
         if: failure()
         shell: bash
         run: |
+          set +e +o pipefail
+          PAT="error|fatal|failed|undefined reference|not found|exception|cannot|No such"
           for f in "$LOG_DIR"/*.log; do
             [ -f "$f" ] || continue
             name=$(basename "$f")
-            # Solo logs con problemas
-            if ! grep -qiE "error|fatal|failed|undefined reference|not found|exception|cannot|No such" "$f"; then continue; fi
+            grep -qiE "$PAT" "$f" || continue
             {
-              grep -n -iE "error|fatal|failed|undefined reference|not found|exception|cannot|No such" "$f" | head -25
+              grep -n -iE "$PAT" "$f" | tail -n 30
               echo "---- ultimas lineas ----"
-              tail -n 15 "$f"
-            } | cut -c1-300 | head -c 3500 > "$RUNNER_TEMP/ann.txt"
+              tail -n 20 "$f"
+            } | cut -c1-300 > "$RUNNER_TEMP/ann_full.txt"
+            head -c 6000 "$RUNNER_TEMP/ann_full.txt" > "$RUNNER_TEMP/ann.txt"
             msg=$(sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g' "$RUNNER_TEMP/ann.txt")
             echo "::error title=Log ${name}::${msg}"
           done
+          exit 0
