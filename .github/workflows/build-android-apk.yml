@@ -1,0 +1,230 @@
+name: Build Android APK (armeabi-v7a + arm64-v8a)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "Tipo de build"
+        type: choice
+        default: release
+        options:
+          - release
+          - debug
+  push:
+    branches:
+      - main
+      - preview/public-playtest
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HAXE_VERSION: 4.3.7
+  ANDROID_PLATFORM: "35"
+  ANDROID_BUILD_TOOLS: "35.0.0"
+  ANDROID_NDK_VERSION: "27.2.12479018"
+  # En push no hay inputs, asi que se usa release por defecto.
+  BUILD_TYPE: ${{ github.event.inputs.build_type || 'release' }}
+
+jobs:
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK and NDK
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-${ANDROID_PLATFORM}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}" \
+            "ndk;${ANDROID_NDK_VERSION}"
+
+      - name: Configure Android environment
+        shell: bash
+        run: |
+          echo "ANDROID_SDK=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "CXXFLAGS=-std=c++20" >> "$GITHUB_ENV"
+
+      - name: Install Linux dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libdbus-1-dev \
+            libasound2-dev \
+            libudev-dev \
+            libpipewire-0.3-dev \
+            libpulse-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libwayland-bin \
+            wayland-protocols \
+            libx11-dev \
+            libxext-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxss-dev \
+            libgl1-mesa-dev \
+            libglu1-mesa-dev \
+            pkg-config
+
+      - name: Setup Haxe
+        uses: krdlab/setup-haxe@v2
+        with:
+          haxe-version: ${{ env.HAXE_VERSION }}
+
+      - name: Cache haxelib
+        id: cache-haxelib
+        uses: actions/cache@v4
+        with:
+          path: .haxelib
+          key: haxelib-android-apk-${{ env.HAXE_VERSION }}-${{ env.ANDROID_NDK_VERSION }}-${{ hashFiles('hmm.json') }}
+
+      - name: Install HMM
+        shell: bash
+        run: haxelib install hmm --quiet
+
+      - name: Install dependencies
+        if: steps.cache-haxelib.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          rm -rf .haxelib
+          haxelib run hmm install
+
+      - name: Build hxcpp
+        if: steps.cache-haxelib.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          HXCPP_PATH=$(haxelib libpath hxcpp | tr -d '\n')
+          cd "$HXCPP_PATH/tools/hxcpp"
+          haxe compile.hxml
+
+      - name: Rebuild Lime (cpp tools)
+        if: steps.cache-haxelib.outputs.cache-hit != 'true'
+        shell: bash
+        run: haxelib run lime rebuild cpp
+
+      - name: Setup Lime Android
+        shell: bash
+        run: |
+          haxelib run lime setup android <<EOF
+          $ANDROID_SDK_ROOT
+          $ANDROID_NDK_ROOT
+          $JAVA_HOME
+          EOF
+
+      - name: Rebuild Lime Android (armv7 + arm64)
+        if: steps.cache-haxelib.outputs.cache-hit != 'true'
+        shell: bash
+        run: haxelib run lime rebuild android -armv7 -arm64
+
+      - name: Build Android
+        shell: bash
+        run: |
+          haxelib run lime build android -${BUILD_TYPE} -armv7 -arm64 -DGITHUB_BUILD
+
+      - name: Locate APK
+        id: find
+        shell: bash
+        run: |
+          mapfile -t APKS < <(find "export/${BUILD_TYPE}/android" -type f -name "*.apk" | sort)
+          echo "APKs encontrados:"; printf '  %s\n' "${APKS[@]}"
+          if [ "${#APKS[@]}" -eq 0 ]; then
+            echo "::error::No se genero ningun APK"
+            find export -maxdepth 8 -type d | head -80
+            exit 1
+          fi
+          # Si hay varios, se prefiere el de outputs/apk/<tipo>/
+          APK="${APKS[0]}"
+          for a in "${APKS[@]}"; do
+            case "$a" in */outputs/apk/*) APK="$a"; break;; esac
+          done
+          echo "apk=$APK" >> "$GITHUB_OUTPUT"
+          echo "Usando: $APK"
+
+      - name: Verify both ABIs are inside the APK
+        shell: bash
+        run: |
+          APK="${{ steps.find.outputs.apk }}"
+          unzip -l "$APK" | grep -E "lib/(armeabi-v7a|arm64-v8a)/" | awk '{print $4}' | cut -d/ -f1-2 | sort | uniq -c
+          for abi in armeabi-v7a arm64-v8a; do
+            if ! unzip -l "$APK" | grep -q "lib/${abi}/"; then
+              echo "::error::Falta la arquitectura ${abi} en el APK"
+              exit 1
+            fi
+          done
+          echo "OK: el APK contiene armeabi-v7a y arm64-v8a"
+
+      - name: Align and sign APK
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          BT="$ANDROID_SDK_ROOT/build-tools/${ANDROID_BUILD_TOOLS}"
+          IN="${{ steps.find.outputs.apk }}"
+          mkdir -p dist
+
+          if [ -n "${KEYSTORE_BASE64:-}" ] && [ -n "${KEYSTORE_PASSWORD:-}" ] && [ -n "${KEY_ALIAS:-}" ]; then
+            echo "Firmando con la keystore de los secrets"
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            KS_PASS="$KEYSTORE_PASSWORD"; KS_ALIAS="$KEY_ALIAS"
+          else
+            echo "No hay keystore en los secrets: se genera una temporal (el APK sera instalable, pero la firma cambia en cada build)"
+            KS_PASS="android"; KS_ALIAS="funkin"
+            keytool -genkeypair -keystore "$RUNNER_TEMP/release.keystore" \
+              -alias "$KS_ALIAS" -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$KS_PASS" -keypass "$KS_PASS" \
+              -dname "CN=Funkin PlayTest, O=Dev, C=US"
+          fi
+
+          "$BT/zipalign" -f -p 4 "$IN" "$RUNNER_TEMP/aligned.apk"
+          "$BT/apksigner" sign \
+            --ks "$RUNNER_TEMP/release.keystore" \
+            --ks-key-alias "$KS_ALIAS" \
+            --ks-pass "pass:$KS_PASS" \
+            --key-pass "pass:$KS_PASS" \
+            --out "dist/Funkin-PlayTest-${BUILD_TYPE}.apk" \
+            "$RUNNER_TEMP/aligned.apk"
+          "$BT/apksigner" verify --verbose "dist/Funkin-PlayTest-${BUILD_TYPE}.apk"
+          rm -f "$RUNNER_TEMP/release.keystore"
+          ls -lh dist
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Funkin-PlayTest-Android-${{ env.BUILD_TYPE }}
+          path: dist/*.apk
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
