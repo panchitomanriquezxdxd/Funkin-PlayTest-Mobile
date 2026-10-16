@@ -10,6 +10,10 @@ on:
         options:
           - release
           - debug
+      source_ref:
+        description: "Commit/rama/tag a compilar (vacio = el que dispara el workflow)"
+        type: string
+        default: ""
   push:
     branches:
       - main
@@ -20,7 +24,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: build-android-apk-${{ github.ref }}
+  group: build-android-apk-${{ github.ref }}-${{ github.event.inputs.source_ref }}
   cancel-in-progress: true
 
 env:
@@ -50,6 +54,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.inputs.source_ref || github.sha }}
           submodules: recursive
           fetch-depth: 1
 
