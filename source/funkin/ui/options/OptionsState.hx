@@ -207,10 +207,22 @@ class OptionsMenu extends Page<OptionsMenuPageName>
     {
       FlxG.switchState(() -> new funkin.ui.modmenu.ModMenuState());
     });
-    createItem('OPEN DEBUG MENU', function()
+    #if FEATURE_DEBUG_MENU
+    // Menu de debug (editores) accesible desde Options, ya que en movil no hay atajo de teclado.
+    createItem('DEBUG MENU', function()
     {
-      FlxG.state.openSubState(new funkin.ui.debug.DebugMenuSubState());
+      var state = OptionsState.instance;
+      // Evita que la pagina de Options siga recibiendo toques por debajo del submenu.
+      state.persistentUpdate = false;
+
+      var debugMenu = new funkin.ui.debug.DebugMenuSubState();
+      debugMenu.closeCallback = function()
+      {
+        state.persistentUpdate = true;
+      };
+      state.openSubState(debugMenu);
     });
+    #end
     #end
     #if FEATURE_NEWGROUNDS
     if (NewgroundsClient.instance.isLoggedIn())
