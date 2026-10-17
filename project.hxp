@@ -558,12 +558,11 @@ class Project extends HXProject
     // cargar primero las capas (layouts) en un orden seguro.
     if (FEATURE_HAXEUI.isEnabled(this))
     {
-      if (this.defines.exists("EXP_PRELOAD_HLAYOUT"))
+      if (this.defines.exists("EXP_PRELOAD_DEFER")) addHaxeMacro("funkin.util.macro.HaxeUIMacro.preloadLayoutsDeferred()");
+      if (this.defines.exists("EXP_PRELOAD_FLXDEFINES"))
       {
-        addHaxeMacro("haxe.macro.Context.getModule('haxe.ui.layouts.Layout')");
-        addHaxeMacro("haxe.macro.Context.getModule('haxe.ui.layouts.DefaultLayout')");
-        addHaxeMacro("haxe.macro.Context.getModule('haxe.ui.layouts.HorizontalLayout')");
-        addHaxeMacro("haxe.macro.Context.getModule('haxe.ui.layouts.HorizontalContinuousLayout')");
+        addHaxeMacro("flixel.system.macros.FlxDefines.run()");
+        addHaxeMacro("funkin.util.macro.HaxeUIMacro.preloadLayouts()");
       }
       if (this.defines.exists("EXP_INCLUDE_LAYOUTS")) addHaxeMacro("include('haxe.ui.layouts', false)");
     }

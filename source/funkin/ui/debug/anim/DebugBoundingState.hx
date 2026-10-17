@@ -56,7 +56,6 @@ class DebugBoundingState extends FlxState
   var currentAnimationName(get, never):String;
 
   #if FEATURE_TOUCH_CONTROLS
-  var backButton:FunkinBackButton;
   #end
 
   function get_currentAnimationName():String

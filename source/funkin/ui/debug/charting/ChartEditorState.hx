@@ -528,7 +528,6 @@ class ChartEditorState extends UIState
   var uiCamera:FlxCamera;
 
   #if FEATURE_TOUCH_CONTROLS
-  var backButton:FunkinBackButton;
   var touchScrollLastY:Float = 0;
   var touchScrollActive:Bool = false;
   #end
