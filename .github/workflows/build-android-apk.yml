@@ -196,10 +196,31 @@ jobs:
           path: .haxelib
           key: haxelib-android-apk-${{ env.HAXE_VERSION }}-${{ env.ANDROID_NDK_VERSION }}-${{ hashFiles('hmm.json') }}
 
+      - name: Restore hxcpp object cache
+        id: cache-hxcpp
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/hxcpp_cache
+          key: hxcpp-obj-android-${{ env.BUILD_TYPE }}-${{ github.sha }}
+          restore-keys: |
+            hxcpp-obj-android-${{ env.BUILD_TYPE }}-
+
       - name: Build Android
         shell: bash
+        env:
+          HXCPP_COMPILE_CACHE: ${{ runner.temp }}/hxcpp_cache
+          HXCPP_CACHE_MB: "4096"
         run: |
+          mkdir -p "$HXCPP_COMPILE_CACHE"
           haxelib run lime build android -${BUILD_TYPE} -armv7 -arm64 -DGITHUB_BUILD 2>&1 | tee "$LOG_DIR/08-build.log"
+
+      # Se guarda siempre (aunque el build falle) para no perder la compilacion de C++.
+      - name: Save hxcpp object cache
+        if: always() && steps.cache-hxcpp.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/hxcpp_cache
+          key: hxcpp-obj-android-${{ env.BUILD_TYPE }}-${{ github.sha }}
 
       - name: Locate APK
         id: find
@@ -220,18 +241,21 @@ jobs:
           echo "apk=$APK" >> "$GITHUB_OUTPUT"
           echo "Usando: $APK"
 
-      - name: Verify both ABIs are inside the APK
+      - name: Verify ABIs inside the APK
         shell: bash
         run: |
           APK="${{ steps.find.outputs.apk }}"
           unzip -l "$APK" | grep -E "lib/(armeabi-v7a|arm64-v8a)/" | awk '{print $4}' | cut -d/ -f1-2 | sort | uniq -c
-          for abi in armeabi-v7a arm64-v8a; do
+          # En debug Lime excluye armeabi-v7a por defecto; en release deben estar las dos.
+          ABIS="arm64-v8a"
+          [ "$BUILD_TYPE" = "release" ] && ABIS="armeabi-v7a arm64-v8a"
+          for abi in $ABIS; do
             if ! unzip -l "$APK" | grep -q "lib/${abi}/"; then
               echo "::error::Falta la arquitectura ${abi} en el APK"
               exit 1
             fi
           done
-          echo "OK: el APK contiene armeabi-v7a y arm64-v8a"
+          echo "OK: ABIs verificadas ($ABIS)"
 
       - name: Align and sign APK
         shell: bash
@@ -295,17 +319,20 @@ jobs:
         shell: bash
         run: |
           set +e +o pipefail
-          PAT="error|fatal|failed|undefined reference|not found|exception|cannot|No such"
+          # Errores reales: sin lineas de comandos clang++ ni barras de progreso
+          PAT="(^|[^a-zA-Z])(error|fatal error|ERROR)([^a-zA-Z]|$)|undefined (reference|symbol)|FAILED|Exception|Could not|not found|No such file|cannot find"
           for f in "$LOG_DIR"/*.log; do
             [ -f "$f" ] || continue
             name=$(basename "$f")
-            grep -qiE "$PAT" "$f" || continue
+            sed 's/\x1b\[[0-9;]*m//g' "$f" | grep -v -E "^clang|^- \[|^ *- *\[|astc-textures|^[0-9]+:clang" > "$RUNNER_TEMP/clean.log"
+            grep -qE "$PAT" "$RUNNER_TEMP/clean.log" || continue
             {
-              grep -n -iE "$PAT" "$f" | tail -n 30
               echo "---- ultimas lineas ----"
-              tail -n 20 "$f"
-            } | cut -c1-300 > "$RUNNER_TEMP/ann_full.txt"
-            head -c 6000 "$RUNNER_TEMP/ann_full.txt" > "$RUNNER_TEMP/ann.txt"
+              tail -n 25 "$RUNNER_TEMP/clean.log"
+              echo "---- errores ----"
+              grep -n -E "$PAT" "$RUNNER_TEMP/clean.log" | tail -n 25
+            } | cut -c1-260 > "$RUNNER_TEMP/ann_full.txt"
+            head -c 6500 "$RUNNER_TEMP/ann_full.txt" > "$RUNNER_TEMP/ann.txt"
             msg=$(sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g' "$RUNNER_TEMP/ann.txt")
             echo "::error title=Log ${name}::${msg}"
           done

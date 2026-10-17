@@ -1,161 +1,346 @@
 name: Build
 
+# Basado en la guia "Android Compiling For Dummies"
+# https://github.com/FunkinCrew/Funkin/discussions/5949
+#   JDK 17 (Temurin) | build-tools 35.0.0 | NDK 29.0.13113456 | platforms android-29 + android-35
+# Genera un APK con armeabi-v7a y arm64-v8a (build "release"; en debug Lime excluye armv7).
+
 on:
   push:
     branches:
       - main
+      - preview/public-playtest
   workflow_dispatch:
+    inputs:
+      build_type:
+        description: "Tipo de build"
+        type: choice
+        default: release
+        options:
+          - release
+          - debug
+      source_ref:
+        description: "Commit/rama/tag a compilar (vacio = el que dispara el workflow)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-${{ github.ref }}-${{ github.event.inputs.source_ref }}
   cancel-in-progress: true
 
 env:
   HAXE_VERSION: 4.3.7
+  ANDROID_PLATFORM: "35"
+  ANDROID_BUILD_TOOLS: "35.0.0"
+  ANDROID_NDK_VERSION: "29.0.13113456"
+  BUILD_TYPE: ${{ github.event.inputs.build_type || 'release' }}
+  LOG_DIR: ${{ github.workspace }}/.ci-logs
 
 jobs:
   android:
     name: Android
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Version fija: ubuntu-latest migra a Ubuntu 26 el 19/10/2026 y podria romper el build.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
 
     steps:
+      - name: Free disk space
+        shell: bash
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL /usr/local/.ghcup || true
+          df -h /
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.inputs.source_ref || github.sha }}
           submodules: recursive
           fetch-depth: 1
 
+      - name: Prepare log directory
+        shell: bash
+        run: mkdir -p "$LOG_DIR"
+
       - name: Setup Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
-      - name: Setup Android
-        uses: android-actions/setup-android@v3
-        with:
-          packages: "platform-tools"
-
-      - name: Cache Android SDK packages
-        id: cache-android-sdk
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ env.ANDROID_SDK_ROOT }}/ndk
-            ${{ env.ANDROID_SDK_ROOT }}/platforms
-            ${{ env.ANDROID_SDK_ROOT }}/build-tools
-          key: android-sdk-ndk27.2.12479018-platform35-buildtools35.0.0
-
-      - name: Install Android SDK
-        if: steps.cache-android-sdk.outputs.cache-hit != 'true'
+      # Se usa el SDK que ya trae el runner en vez de android-actions/setup-android
+      # (ese paso fallaba al inicio del build).
+      - name: Install Android SDK and NDK
         shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager --install \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0" \
-            "ndk;27.2.12479018"
+          {
+            echo "ANDROID_HOME=${ANDROID_HOME:-unset}  ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-unset}"
+            SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+            echo "SDK=$SDK"; ls "$SDK" || true
+            if [ ! -w "$SDK" ]; then sudo chown -R "$(id -u):$(id -g)" "$SDK"; fi
 
-      - name: Configure Android
-        shell: bash
-        run: |
-          echo "ANDROID_SDK=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
-          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
-          echo "CXXFLAGS=-std=c++20" >> "$GITHUB_ENV"
+            SDKMANAGER="$(command -v sdkmanager || true)"
+            [ -z "$SDKMANAGER" ] && SDKMANAGER="$(find "$SDK/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -n 1)"
+            echo "sdkmanager=$SDKMANAGER"
+            [ -z "$SDKMANAGER" ] && { echo "No se encontro sdkmanager"; exit 1; }
+
+            yes | "$SDKMANAGER" --sdk_root="$SDK" --licenses >/dev/null 2>&1 || true
+            "$SDKMANAGER" --sdk_root="$SDK" --install \
+              "platform-tools" \
+              "platforms;android-29" \
+              "platforms;android-${ANDROID_PLATFORM}" \
+              "build-tools;${ANDROID_BUILD_TOOLS}" \
+              "ndk;${ANDROID_NDK_VERSION}"
+
+            echo "ANDROID_SDK=$SDK" >> "$GITHUB_ENV"
+            echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+            echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+            echo "ANDROID_NDK_ROOT=$SDK/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+            echo "ANDROID_NDK_HOME=$SDK/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+            echo "CXXFLAGS=-std=c++20" >> "$GITHUB_ENV"
+            ls "$SDK/ndk" "$SDK/build-tools"
+          } 2>&1 | tee "$LOG_DIR/01-android-sdk.log"
 
       - name: Install Linux dependencies
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libdbus-1-dev \
-            libasound2-dev \
-            libudev-dev \
-            libpipewire-0.3-dev \
-            libpulse-dev \
-            libxkbcommon-dev \
-            libwayland-dev \
-            libwayland-bin \
-            wayland-protocols \
-            libx11-dev \
-            libxext-dev \
-            libxrandr-dev \
-            libxinerama-dev \
-            libxcursor-dev \
-            libxi-dev \
-            libxss-dev \
-            libgl1-mesa-dev \
-            libglu1-mesa-dev \
-            pkg-config
+          {
+            sudo apt-get update
+            sudo apt-get install -y \
+              libdbus-1-dev \
+              libasound2-dev \
+              libudev-dev \
+              libpipewire-0.3-dev \
+              libpulse-dev \
+              libxkbcommon-dev \
+              libwayland-dev \
+              libwayland-bin \
+              wayland-protocols \
+              libx11-dev \
+              libxext-dev \
+              libxrandr-dev \
+              libxinerama-dev \
+              libxcursor-dev \
+              libxi-dev \
+              libxss-dev \
+              libgl1-mesa-dev \
+              libglu1-mesa-dev \
+              pkg-config
+          } 2>&1 | tee "$LOG_DIR/02-apt.log"
 
       - name: Setup Haxe
         uses: krdlab/setup-haxe@v2
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
-      - name: Cache haxelib
+      - name: Restore haxelib cache
         id: cache-haxelib
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: .haxelib
-          key: haxelib-android-${{ hashFiles('hmm.json') }}
-          restore-keys: |
-            haxelib-android-
+          key: haxelib-android-${{ env.HAXE_VERSION }}-${{ env.ANDROID_NDK_VERSION }}-${{ hashFiles('hmm.json') }}
 
-      - name: Install HMM
+      - name: Install HMM and dependencies
+        if: steps.cache-haxelib.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          {
+            haxelib install hmm --quiet
+            rm -rf .haxelib
+            haxelib run hmm install
+          } 2>&1 | tee "$LOG_DIR/03-hmm.log"
+
+      - name: Install HMM (cache hit)
+        if: steps.cache-haxelib.outputs.cache-hit == 'true'
         shell: bash
         run: haxelib install hmm --quiet
-
-      - name: Install dependencies
-        shell: bash
-        run: haxelib run hmm install
 
       - name: Build hxcpp
         if: steps.cache-haxelib.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          HXCPP_PATH=$(haxelib libpath hxcpp | tr -d '\n')
-          cd "$HXCPP_PATH/tools/hxcpp"
-          haxe compile.hxml
+          {
+            HXCPP_PATH=$(haxelib libpath hxcpp | tr -d '\n')
+            cd "$HXCPP_PATH/tools/hxcpp"
+            haxe compile.hxml
+          } 2>&1 | tee "$LOG_DIR/04-hxcpp.log"
 
-      - name: Rebuild Lime
+      - name: Rebuild Lime (cpp tools)
         if: steps.cache-haxelib.outputs.cache-hit != 'true'
         shell: bash
-        run: haxelib run lime rebuild cpp
+        run: |
+          haxelib run lime rebuild cpp 2>&1 | tee "$LOG_DIR/05-lime-cpp.log"
 
       - name: Setup Lime Android
         shell: bash
         run: |
-          haxelib run lime setup android <<EOF
+          {
+            haxelib run lime setup android <<EOF
           $ANDROID_SDK_ROOT
           $ANDROID_NDK_ROOT
           $JAVA_HOME
           EOF
+          } 2>&1 | tee "$LOG_DIR/06-lime-setup.log"
 
-      - name: Rebuild Lime Android
+      - name: Rebuild Lime Android (armv7 + arm64)
         if: steps.cache-haxelib.outputs.cache-hit != 'true'
         shell: bash
-        run: haxelib run lime rebuild android
+        run: |
+          haxelib run lime rebuild android -armv7 -arm64 2>&1 | tee "$LOG_DIR/07-lime-android.log"
+
+      # Se guarda aqui (y no al final del job) para no perder ~25 min de compilacion
+      # de Lime si el build del juego falla.
+      - name: Save haxelib cache
+        if: steps.cache-haxelib.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .haxelib
+          key: haxelib-android-${{ env.HAXE_VERSION }}-${{ env.ANDROID_NDK_VERSION }}-${{ hashFiles('hmm.json') }}
+
+      - name: Restore hxcpp object cache
+        id: cache-hxcpp
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/hxcpp_cache
+          key: hxcpp-obj-build-android-${{ env.BUILD_TYPE }}-${{ github.sha }}
+          restore-keys: |
+            hxcpp-obj-build-android-${{ env.BUILD_TYPE }}-
 
       - name: Build Android
         shell: bash
-        run: haxelib run lime build android -arm64 -debug -DGITHUB_BUILD
+        env:
+          HXCPP_COMPILE_CACHE: ${{ runner.temp }}/hxcpp_cache
+          HXCPP_CACHE_MB: "4096"
+        run: |
+          mkdir -p "$HXCPP_COMPILE_CACHE"
+          haxelib run lime build android -${BUILD_TYPE} -armv7 -arm64 -DGITHUB_BUILD 2>&1 | tee "$LOG_DIR/08-build.log"
 
-      - name: Upload Android
+      # Se guarda siempre (aunque el build falle) para no perder la compilacion de C++.
+      - name: Save hxcpp object cache
+        if: always() && steps.cache-hxcpp.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/hxcpp_cache
+          key: hxcpp-obj-build-android-${{ env.BUILD_TYPE }}-${{ github.sha }}
+
+      - name: Locate APK
+        id: find
+        shell: bash
+        run: |
+          mapfile -t APKS < <(find "export/${BUILD_TYPE}/android" -type f -name "*.apk" | sort)
+          echo "APKs encontrados:"; printf '  %s\n' "${APKS[@]}"
+          if [ "${#APKS[@]}" -eq 0 ]; then
+            echo "::error::No se genero ningun APK en export/${BUILD_TYPE}/android"
+            find export -maxdepth 8 -type d | head -80
+            exit 1
+          fi
+          # Si hay varios, se prefiere el de outputs/apk/<tipo>/
+          APK="${APKS[0]}"
+          for a in "${APKS[@]}"; do
+            case "$a" in */outputs/apk/*) APK="$a"; break;; esac
+          done
+          echo "apk=$APK" >> "$GITHUB_OUTPUT"
+          echo "Usando: $APK"
+
+      - name: Verify ABIs inside the APK
+        shell: bash
+        run: |
+          APK="${{ steps.find.outputs.apk }}"
+          unzip -l "$APK" | grep -E "lib/(armeabi-v7a|arm64-v8a)/" | awk '{print $4}' | cut -d/ -f1-2 | sort | uniq -c
+          # En debug Lime excluye armeabi-v7a por defecto; en release deben estar las dos.
+          ABIS="arm64-v8a"
+          [ "$BUILD_TYPE" = "release" ] && ABIS="armeabi-v7a arm64-v8a"
+          for abi in $ABIS; do
+            if ! unzip -l "$APK" | grep -q "lib/${abi}/"; then
+              echo "::error::Falta la arquitectura ${abi} en el APK"
+              exit 1
+            fi
+          done
+          echo "OK: ABIs verificadas ($ABIS)"
+
+      - name: Align and sign APK
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          BT="$ANDROID_SDK_ROOT/build-tools/${ANDROID_BUILD_TOOLS}"
+          IN="${{ steps.find.outputs.apk }}"
+          mkdir -p dist
+
+          if [ -n "${KEYSTORE_BASE64:-}" ] && [ -n "${KEYSTORE_PASSWORD:-}" ] && [ -n "${KEY_ALIAS:-}" ]; then
+            echo "Firmando con la keystore de los secrets"
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            KS_PASS="$KEYSTORE_PASSWORD"; KS_ALIAS="$KEY_ALIAS"
+          else
+            echo "No hay keystore en los secrets: se genera una temporal (el APK sera instalable, pero la firma cambia en cada build)"
+            KS_PASS="android"; KS_ALIAS="funkin"
+            keytool -genkeypair -keystore "$RUNNER_TEMP/release.keystore" \
+              -alias "$KS_ALIAS" -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$KS_PASS" -keypass "$KS_PASS" \
+              -dname "CN=Funkin PlayTest, O=Dev, C=US"
+          fi
+
+          "$BT/zipalign" -f -p 4 "$IN" "$RUNNER_TEMP/aligned.apk"
+          "$BT/apksigner" sign \
+            --ks "$RUNNER_TEMP/release.keystore" \
+            --ks-key-alias "$KS_ALIAS" \
+            --ks-pass "pass:$KS_PASS" \
+            --key-pass "pass:$KS_PASS" \
+            --out "dist/Funkin-PlayTest-${BUILD_TYPE}.apk" \
+            "$RUNNER_TEMP/aligned.apk"
+          "$BT/apksigner" verify --verbose "dist/Funkin-PlayTest-${BUILD_TYPE}.apk"
+          rm -f "$RUNNER_TEMP/release.keystore"
+          ls -lh dist
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Funkin (PlayTest) (Android)
-          path: export/debug/android/**/*.apk
+          path: dist/*.apk
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-build-yml-${{ env.BUILD_TYPE }}
+          path: .ci-logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # Si algo falla, muestra las lineas relevantes del log como anotaciones
+      # visibles en la pagina del run (sin tener que descargar nada).
+      - name: Report errors
+        if: failure()
+        shell: bash
+        run: |
+          set +e +o pipefail
+          # Errores reales: sin lineas de comandos clang++ ni barras de progreso
+          PAT="(^|[^a-zA-Z])(error|fatal error|ERROR)([^a-zA-Z]|$)|undefined (reference|symbol)|FAILED|Exception|Could not|not found|No such file|cannot find"
+          for f in "$LOG_DIR"/*.log; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f")
+            sed 's/\x1b\[[0-9;]*m//g' "$f" | grep -v -E "^clang|^- \[|^ *- *\[|astc-textures|^[0-9]+:clang" > "$RUNNER_TEMP/clean.log"
+            grep -qE "$PAT" "$RUNNER_TEMP/clean.log" || continue
+            {
+              echo "---- ultimas lineas ----"
+              tail -n 25 "$RUNNER_TEMP/clean.log"
+              echo "---- errores ----"
+              grep -n -E "$PAT" "$RUNNER_TEMP/clean.log" | tail -n 25
+            } | cut -c1-260 > "$RUNNER_TEMP/ann_full.txt"
+            head -c 6500 "$RUNNER_TEMP/ann_full.txt" > "$RUNNER_TEMP/ann.txt"
+            msg=$(sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g' "$RUNNER_TEMP/ann.txt")
+            echo "::error title=Log ${name}::${msg}"
+          done
+          exit 0
 
   ios:
     name: iOS
