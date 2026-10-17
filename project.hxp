@@ -554,6 +554,20 @@ class Project extends HXProject
   {
     addHaxeFlag("-dce no");
 
+    // Experimentos para el bucle "Loop in class building" de haxeui-core:
+    // cargar primero las capas (layouts) en un orden seguro.
+    if (FEATURE_HAXEUI.isEnabled(this))
+    {
+      if (this.defines.exists("EXP_PRELOAD_HLAYOUT"))
+      {
+        addHaxeMacro("haxe.macro.Context.getModule('haxe.ui.layouts.Layout')");
+        addHaxeMacro("haxe.macro.Context.getModule('haxe.ui.layouts.DefaultLayout')");
+        addHaxeMacro("haxe.macro.Context.getModule('haxe.ui.layouts.HorizontalLayout')");
+        addHaxeMacro("haxe.macro.Context.getModule('haxe.ui.layouts.HorizontalContinuousLayout')");
+      }
+      if (this.defines.exists("EXP_INCLUDE_LAYOUTS")) addHaxeMacro("include('haxe.ui.layouts', false)");
+    }
+
     var expMobileLast:Bool = this.defines.exists("EXP_MOBILE_LAST");
     var expHaxeuiFirst:Bool = this.defines.exists("EXP_HAXEUI_FIRST");
     var expNoHaxeuiPkgs:Bool = this.defines.exists("EXP_NO_HAXEUI_PKGS");
