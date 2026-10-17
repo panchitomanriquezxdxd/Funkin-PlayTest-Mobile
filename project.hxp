@@ -312,9 +312,7 @@ class Project extends HXProject
     FEATURE_NEWGROUNDS_AUTOLOGIN.apply(this, FEATURE_NEWGROUNDS.isEnabled(this) && isWeb());
     FEATURE_NEWGROUNDS_EVENTS.apply(this, FEATURE_NEWGROUNDS.isEnabled(this));
 
-    // Los editores (haxeui) solo en escritorio: en movil rompen la compilacion
-    // ("Loop in class building" en haxeui-core).
-    var editorsEnabled:Bool = isDesktop();
+    var editorsEnabled:Bool = isDesktop() || (isMobile() && this.defines.exists("FEATURE_MOBILE_EDITORS"));
     FEATURE_DEBUG_MENU.apply(this, editorsEnabled);
     FEATURE_ANIMATION_EDITOR.apply(this, editorsEnabled);
     FEATURE_CHART_EDITOR.apply(this, editorsEnabled);
@@ -556,41 +554,53 @@ class Project extends HXProject
   {
     addHaxeFlag("-dce no");
 
+    var expMobileLast:Bool = this.defines.exists("EXP_MOBILE_LAST");
+    var expHaxeuiFirst:Bool = this.defines.exists("EXP_HAXEUI_FIRST");
+    var expNoHaxeuiPkgs:Bool = this.defines.exists("EXP_NO_HAXEUI_PKGS");
+
+    if (expHaxeuiFirst && FEATURE_HAXEUI.isEnabled(this)) addHaxeuiIncludes(expNoHaxeuiPkgs);
+
     addHaxeMacro("include('funkin', true, ['funkin.mobile.*', 'funkin.ui.debug.anim.*', 'funkin.ui.debug.charting.*', 'funkin.ui.debug.stage.*', 'funkin.ui.debug.stageeditor.*', 'funkin.ui.debug.cameraeditor.*', 'funkin.ui.haxeui.*'])");
 
-    if (isMobile()) addHaxeMacro("include('funkin.mobile')");
+    if (isMobile() && !expMobileLast) addHaxeMacro("include('funkin.mobile')");
 
-    if (FEATURE_HAXEUI.isEnabled(this))
-    {
-      if (FEATURE_ANIMATION_EDITOR.isEnabled(this)) addHaxeMacro("include('funkin.ui.debug.anim')");
-      if (FEATURE_CHART_EDITOR.isEnabled(this)) addHaxeMacro("include('funkin.ui.debug.charting')");
+    if (FEATURE_HAXEUI.isEnabled(this) && !expHaxeuiFirst) addHaxeuiIncludes(expNoHaxeuiPkgs);
 
-      if (FEATURE_STAGE_EDITOR.isEnabled(this))
-      {
-        addHaxeMacro("include('funkin.ui.debug.stage')");
-        addHaxeMacro("include('funkin.ui.debug.stageeditor')");
-      }
-
-      if (FEATURE_CAMERA_EDITOR.isEnabled(this)) addHaxeMacro("include('funkin.ui.debug.cameraeditor')");
-
-      final haxeuiPackages:Array<String> = [
-        'funkin.ui.haxeui',
-        'haxe.ui.backend.flixel.components',
-        'haxe.ui.core',
-        'haxe.ui.components',
-        'haxe.ui.containers',
-        'haxe.ui.containers.dialogs',
-        'haxe.ui.containers.menus',
-        'haxe.ui.containers.properties'
-      ];
-
-      for (pack in haxeuiPackages) addHaxeMacro("include('" + pack + "')");
-    }
+    if (isMobile() && expMobileLast) addHaxeMacro("include('funkin.mobile')");
 
     addHaxeMacro("include('animate')");
     addHaxeMacro("include('openfl')");
     addHaxeMacro("include('lime', true, ['lime.tools.*', 'lime._internal.*'])");
     addHaxeMacro("include('flixel', true, ['flixel.addons.editors.spine.*', 'flixel.addons.nape.*', 'flixel.system.macros.*', 'flixel.addons.tile.FlxRayCastTilemap'])");
+  }
+
+  function addHaxeuiIncludes(noPkgs:Bool):Void
+  {
+    if (FEATURE_ANIMATION_EDITOR.isEnabled(this)) addHaxeMacro("include('funkin.ui.debug.anim')");
+    if (FEATURE_CHART_EDITOR.isEnabled(this)) addHaxeMacro("include('funkin.ui.debug.charting')");
+
+    if (FEATURE_STAGE_EDITOR.isEnabled(this))
+    {
+      addHaxeMacro("include('funkin.ui.debug.stage')");
+      addHaxeMacro("include('funkin.ui.debug.stageeditor')");
+    }
+
+    if (FEATURE_CAMERA_EDITOR.isEnabled(this)) addHaxeMacro("include('funkin.ui.debug.cameraeditor')");
+
+    if (noPkgs) return;
+
+    final haxeuiPackages:Array<String> = [
+      'funkin.ui.haxeui',
+      'haxe.ui.backend.flixel.components',
+      'haxe.ui.core',
+      'haxe.ui.components',
+      'haxe.ui.containers',
+      'haxe.ui.containers.dialogs',
+      'haxe.ui.containers.menus',
+      'haxe.ui.containers.properties'
+    ];
+
+    for (pack in haxeuiPackages) addHaxeMacro("include('" + pack + "')");
   }
 
   function configureCustomMacros():Void

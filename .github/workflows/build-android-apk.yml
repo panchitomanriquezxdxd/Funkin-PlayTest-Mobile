@@ -14,6 +14,10 @@ on:
         description: "Commit/rama/tag a compilar (vacio = el que dispara el workflow)"
         type: string
         default: ""
+      extra_flags:
+        description: "Flags extra para lime build (p. ej. -Dno-compilation -DEXP_X)"
+        type: string
+        default: ""
   push:
     branches:
       - main
@@ -24,7 +28,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: build-android-apk-${{ github.ref }}-${{ github.event.inputs.source_ref }}
+  group: build-android-apk-${{ github.ref }}-${{ github.event.inputs.source_ref }}-${{ github.event.inputs.extra_flags }}
   cancel-in-progress: true
 
 env:
@@ -212,7 +216,7 @@ jobs:
           HXCPP_CACHE_MB: "4096"
         run: |
           mkdir -p "$HXCPP_COMPILE_CACHE"
-          haxelib run lime build android -${BUILD_TYPE} -armv7 -arm64 -DGITHUB_BUILD 2>&1 | tee "$LOG_DIR/08-build.log"
+          haxelib run lime build android -${BUILD_TYPE} -armv7 -arm64 -DGITHUB_BUILD ${{ github.event.inputs.extra_flags }} 2>&1 | tee "$LOG_DIR/08-build.log"
 
       # Se guarda siempre (aunque el build falle) para no perder la compilacion de C++.
       - name: Save hxcpp object cache
